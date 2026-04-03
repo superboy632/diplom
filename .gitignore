@@ -1,0 +1,73 @@
+# ====================== Virtual Environment ======================
+.venv/
+venv/
+env/
+ENV/
+
+# ====================== Python cache ======================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# ====================== ML / TensorFlow ======================
+*.h5
+*.hdf5
+*.weights.h5
+*.tflite
+checkpoints/
+logs/
+tensorboard/
+saved_model/
+
+# Large image files
+*.tif
+*.tiff
+*.png
+*.jpg
+*.jpeg
+
+# ====================== Datasets ======================
+# Большой исходный мозаичный снимок
+Lunar_LRO_LROC-WAC_Mosaic_global_100m_June2013.tif
+
+# Тайлы (очень много тяжёлых изображений)
+dataset_tiles/
+
+# TensorFlow датасет
+tensorflow_dataset/
+
+# YOLO формат — оставляем только labels и yaml, игнорируем изображения
+# Оставляем только labels и yaml, игнорируем изображения
+LU3M6TGT_yolo_format/images/
+LU3M6TGT_yolo_format/images/train/
+LU3M6TGT_yolo_format/images/val/
+# Разрешаем оставшиеся файлы конфигурации и разметки
+!LU3M6TGT_yolo_format/labels/
+!LU3M6TGT_yolo_format/*.yaml
+
+# ====================== Temporary / Logs ======================
+*.log
+history.json
+*.csv~
+*.parquet
+*.pkl
+
+# ====================== IDE ======================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# ====================== Jupyter ======================
+.ipynb_checkpoints/
+*.ipynb
+
+# ====================== Optional large files ======================
+create_data_tiles/
+epoch_*.weights.h5
+best.weights.h5
+last.weights.h5
+/LU3M6TGT_yolo_format/
