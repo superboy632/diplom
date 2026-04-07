@@ -30,28 +30,22 @@ Moon radius used for Haversine voting: 1 737 400 m.
 import argparse
 import logging
 import math
-import os
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import tensorflow as tf
-from PIL import Image
 from scipy.spatial import KDTree
 
 from geo_utils import (
     IMAGE_SIZE,
     METERS_PER_PIXEL,
     MOON_RADIUS_M,
-    haversine_m,
+    haversine_m,   # re-exported: used by test_navigation.py as loc.haversine_m
     haversine_vec,
-    nms,
     pixel_offset_deg,
 )
 
 # ── Tunable constants ─────────────────────────────────────────────────────────
-FPN_CHANNELS  = 256
-
 ANCHOR_CONF    = 0.2     # minimum detector confidence for query craters
 TOP_K          = 10      # number of anchor craters used for hypothesis search
 MAX_CANDIDATES = 50      # DB candidates tested per anchor
@@ -67,88 +61,49 @@ logging.basicConfig(
 log = logging.getLogger("localize")
 
 
-# ── Model & anchor builder (identical to train_detector.py) ───────────────────
-def build_model() -> tf.keras.Model:
-    inp = tf.keras.Input(shape=(IMAGE_SIZE, IMAGE_SIZE, 3))
-    backbone = tf.keras.applications.EfficientNetB0(
-        include_top=False,
-        weights=None,
-        input_shape=(IMAGE_SIZE, IMAGE_SIZE, 3),
-    )
-    feature  = backbone.get_layer("block5a_project_bn").output
-    x        = inp * 255.0
-    features = tf.keras.Model(backbone.input, feature)(x)
-    x        = tf.keras.layers.Conv2D(FPN_CHANNELS, 1, padding="same", activation="relu")(features)
-    x        = tf.keras.layers.Conv2D(FPN_CHANNELS, 3, padding="same", activation="relu")(x)
-    cls_out  = tf.keras.layers.Conv2D(9,  3, padding="same")(x)
-    box_out  = tf.keras.layers.Conv2D(36, 3, padding="same")(x)
-    cls_out  = tf.keras.layers.Reshape((-1, 1))(cls_out)
-    box_out  = tf.keras.layers.Reshape((-1, 4))(box_out)
-    return tf.keras.Model(inp, [cls_out, box_out])
-
-
-def build_anchors() -> np.ndarray:
-    """Return (N, 4) array of (cx, cy, w, h) in normalised [0, 1] coords."""
-    rows = []
-    stride, base = 16, 64
-    scales = [1.0, 1.26, 1.59]
-    ratios = [0.5, 1.0, 2.0]
-    feat = IMAGE_SIZE // stride
-    for r in range(feat):
-        for c in range(feat):
-            cx = (c + 0.5) * stride / IMAGE_SIZE
-            cy = (r + 0.5) * stride / IMAGE_SIZE
-            for s in scales:
-                for ratio in ratios:
-                    area = (base * s) ** 2
-                    w = math.sqrt(area / ratio) / IMAGE_SIZE
-                    h = math.sqrt(area * ratio) / IMAGE_SIZE
-                    rows.append([cx, cy, w, h])
-    return np.array(rows, dtype=np.float32)
-
-
-# ── Decode raw model output ───────────────────────────────────────────────────
-def decode_predictions(
-    cls_logits: np.ndarray,
-    box_deltas: np.ndarray,
-    anchors:    np.ndarray,
-    conf_thresh: float,
-) -> np.ndarray:
-    """Return (K, 5) array: cx_norm, cy_norm, w_norm, h_norm, conf."""
-    conf = 1.0 / (1.0 + np.exp(-cls_logits[:, 0]))
-    mask = conf > conf_thresh
-    if mask.sum() == 0:
-        return np.empty((0, 5), dtype=np.float32)
-    d  = box_deltas[mask]
-    a  = anchors[mask]
-    cx = np.clip(a[:, 0] + d[:, 0] * a[:, 2],               0.0, 1.0)
-    cy = np.clip(a[:, 1] + d[:, 1] * a[:, 3],               0.0, 1.0)
-    w  = np.clip(a[:, 2] * np.exp(np.clip(d[:, 2], -4, 4)), 0.0, 1.0)
-    h  = np.clip(a[:, 3] * np.exp(np.clip(d[:, 3], -4, 4)), 0.0, 1.0)
-    return np.stack([cx, cy, w, h, conf[mask]], axis=1).astype(np.float32)
+# ── Model loader ──────────────────────────────────────────────────────────────
+def load_model(weights_path: str) -> tuple:
+    """
+    Load YOLOv8 model from weights_path.
+    Returns (model, anchors) where anchors is None (not used by YOLO).
+    """
+    from ultralytics import YOLO
+    log.info(f"Loading YOLOv8 model: {weights_path}")
+    model = YOLO(weights_path)
+    return model, None
 
 
 # ── Step A: detect craters in one image ──────────────────────────────────────
 def detect(
     image_path:  str,
-    model:       tf.keras.Model,
-    anchors:     np.ndarray,
+    model,
+    anchors,        # ignored for YOLO, kept for API compatibility
     conf_thresh: float = ANCHOR_CONF,
 ) -> np.ndarray:
     """
-    Run detector on image_path.
+    Run YOLOv8 detector on image_path.
     Returns (K, 5) array: cx_norm, cy_norm, w_norm, h_norm, confidence,
     sorted by (confidence × width) descending.
     """
-    img   = np.array(Image.open(image_path).convert("RGB"), dtype=np.float32) / 255.0
-    img_t = tf.constant(img[np.newaxis])
-    cls_out, box_out = model(img_t, training=False)
-    dets = decode_predictions(
-        cls_out[0].numpy(), box_out[0].numpy(), anchors, conf_thresh
+    results = model.predict(
+        source=image_path,
+        conf=conf_thresh,
+        imgsz=IMAGE_SIZE,
+        verbose=False,
     )
-    dets = nms(dets)
+
+    if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+        return np.empty((0, 5), dtype=np.float32)
+
+    boxes = results[0].boxes
+    xywhn = boxes.xywhn.cpu().numpy()   # (K, 4): cx_norm, cy_norm, w_norm, h_norm
+    confs = boxes.conf.cpu().numpy()    # (K,)
+
+    dets = np.concatenate([xywhn, confs[:, None]], axis=1).astype(np.float32)
+
     if len(dets) == 0:
         return dets
+
     quality = dets[:, 4] * dets[:, 2]
     return dets[quality.argsort()[::-1]]
 
@@ -158,8 +113,8 @@ def localize(
     image_path: str,
     crater_db:  pd.DataFrame,
     db_tree:    KDTree,
-    model:      tf.keras.Model,
-    anchors:    np.ndarray,
+    model,
+    anchors,
 ) -> dict:
     """
     Estimate tile position from a single 416×416 query image.
@@ -271,6 +226,14 @@ def localize(
             "matched_count": 0, "query_craters": dets, "all_hypotheses": [],
         }
 
+    if hypotheses:
+        scores = sorted([h["score"] for h in hypotheses], reverse=True)[:10]
+        lats   = [h["lat_est"] for h in sorted(hypotheses, key=lambda h: h["score"], reverse=True)[:5]]
+        lons   = [h["lon_est"] for h in sorted(hypotheses, key=lambda h: h["score"], reverse=True)[:5]]
+        log.info(f"Top-10 scores: {[round(s,1) for s in scores]}")
+        log.info(f"Top-5 lats:    {[round(l,2) for l in lats]}")
+        log.info(f"Top-5 lons:    {[round(l,2) for l in lons]}")
+
     best = max(hypotheses, key=lambda h: h["score"])
     log.info(
         f"Navigation Fix: lat={best['lat_est']:.4f}°  "
@@ -302,22 +265,12 @@ def load_db_and_tree(db_path: str) -> tuple[pd.DataFrame, KDTree]:
     return df, tree
 
 
-def load_model(weights_path: str) -> tuple[tf.keras.Model, np.ndarray]:
-    log.info("Building model …")
-    model = build_model()
-    log.info(f"Loading weights: {weights_path}")
-    model.load_weights(weights_path)
-    return model, build_anchors()
-
-
 # ── CLI ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-
     parser = argparse.ArgumentParser(description="Astro-Tracker lunar localisation")
     parser.add_argument("image",         help="Path to query 416×416 PNG")
-    parser.add_argument("--db",          default="crater_db.parquet")
-    parser.add_argument("--weights",     default="checkpoints/last.weights.h5")
+    parser.add_argument("--db",          default="crater_db_v2.parquet")
+    parser.add_argument("--weights",     default="checkpoints/best.pt")
     parser.add_argument("--conf-thresh", type=float, default=ANCHOR_CONF)
     args = parser.parse_args()
 

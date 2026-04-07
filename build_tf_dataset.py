@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from typing import Tuple, Dict, List
 import numpy as np
+import logging
 
 import tensorflow as tf
 
@@ -212,18 +213,20 @@ class CraterDetectionDataset:
             Tuple of (image_tensor, bbox_coords, class_ids)
         """
         for image_path, bboxes in zip(image_paths, bboxes_list):
-            # Load image
-            full_path = str(self.dataset_path.parent / "LU3M6TGT_yolo_format" / image_path)
-            image = tf.io.read_file(full_path)
-            image = tf.image.decode_image(image, channels=3, expand_animations=False)
-            image.set_shape([None, None, 3])
-            image = tf.image.resize(image, self.image_size, method='bilinear')
-            image = tf.cast(image, tf.float32) / 255.0
-            
-            # Process bboxes
-            bbox_coords, class_ids = self._load_bboxes(bboxes)
-            
-            yield image.numpy(), bbox_coords.numpy(), class_ids.numpy()
+            try:
+                full_path = str(self.dataset_path.parent / "LU3M6TGT_yolo_format" / image_path)
+                image = tf.io.read_file(full_path)
+                image = tf.image.decode_image(image, channels=3, expand_animations=False)
+                image.set_shape([None, None, 3])
+                image = tf.image.resize(image, list(self.image_size), method='bilinear')
+                image = tf.cast(image, tf.float32) / 255.0
+
+                bbox_coords, class_ids = self._load_bboxes(bboxes)
+                yield image.numpy(), bbox_coords.numpy(), class_ids.numpy()
+
+            except Exception as e:
+                logging.warning(f"Skipping broken sample {image_path}: {e}")
+                continue
     
     def _create_dataset_from_split(
         self,

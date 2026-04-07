@@ -17,7 +17,6 @@ Usage:
 import argparse
 import logging
 import math
-import os
 import random
 from pathlib import Path
 
@@ -162,8 +161,6 @@ def main(args):
 
 
 if __name__ == "__main__":
-    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-
     parser = argparse.ArgumentParser(
         description="Test Astro-Tracker navigation on random tiles"
     )
@@ -172,9 +169,9 @@ if __name__ == "__main__":
     parser.add_argument("--tiles-dir", default="dataset_tiles",
                         help="Directory with tile PNG files")
     parser.add_argument("--metadata",  default="dataset_tiles/tiles_metadata.csv")
-    parser.add_argument("--db",        default="crater_db.parquet",
+    parser.add_argument("--db",        default="crater_db_v2.parquet",
                         help="Crater database (.parquet or .csv)")
-    parser.add_argument("--weights",   default="checkpoints/last.weights.h5")
+    parser.add_argument("--weights",   default="checkpoints/best.pt")
     parser.add_argument("--seed",      type=int,   default=42,
                         help="Random seed for tile selection")
     parser.add_argument("--output",    default="test_navigation_results.csv",
